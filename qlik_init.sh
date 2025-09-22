@@ -22,7 +22,7 @@ MNT_BIN="$MNT_BASE/bin"                                   # espejo opcional
 EXEC_FILE="repagent"
 AGENTCTL="agentctl"
 
-SERVICE_USER="azureuser"                                  # cámbialo si deseas otro usuario
+SERVICE_USER="root"                                  # cámbialo si deseas otro usuario
 SERVICE_FILE="/etc/systemd/system/repagent.service"
 LOG_FILE="/var/log/repagent.log"
 
