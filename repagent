@@ -1,0 +1,554 @@
+#!/bin/bash
+
+#
+# Copyright (c) 2023 by Qlik Ltd. All rights reserved.
+#
+
+# description: Qlik Data Movement Gateway service management
+# processname: agentctl
+#
+# Filename: arep.sh / <service_name> / <instance name>
+# 
+# This script is used to create and install a configured copy of itself (as a service)
+# The configured copy is used to start and stop the Qlik Data Movement Gateway service daemon
+# and can also be used to check the running status and to uninstall the instance
+#
+# Warning: Do NOT modify a configred copy of arep.sh
+#		   since it will be overwritten during an uprade
+#
+
+prog=$0
+
+[ "${debug}" ] && set -vx && verbose=true
+
+# $1 is a unix command whose output is not interesting unless in debug mode
+function debug()
+{
+	if [ "${debug}" ]
+	then
+		eval $1
+	else
+		eval $1 >> /dev/null 2>&1
+	fi
+
+	return $?
+}
+
+# $1 is a message when some verbosity is desired
+function verbose()
+{
+	[ "${verbose}" ] && echo "$prog: $1"
+	true
+}
+
+# $1 is a port number to validate
+function validate_port
+{
+	# validate usage
+	if [ ! $# = 1 ]
+	then
+		echo -n "[31mNo port number was provided[m"
+		return 1
+	fi
+
+	# port number must be a decimal number
+    if [[ ! "$1" =~ ^[1-9][0-9]*$ ]]
+	then
+		echo -n "[31mInvalid port number $1[m"
+		return 1
+	fi
+
+	# can't use a port below 1024
+	if [ "$1" -lt 1024 ]
+	then
+		echo -n "[31mPort number $1 is below 1024[m"
+		return 1
+	fi
+
+	# can't use a port above 65535
+	if [ "$1" -gt 65535 ]
+	then
+		echo -n "[31mPort number $1 is above 65535[m"
+		return 1
+	fi
+
+	return 0
+}
+
+# display the usage of this script
+# pass : server password
+# iport: internal port 
+# rport: rest port 
+# data : data directory - default is <installation directory>/data
+# tenant_url : tenant url
+function Usage()
+{
+	if [ "`basename $prog`" = "arep.sh" ]
+	then
+		echo "Usage: [pass=server_password] [data=data_directory] [tenant_url=tenant_url] iport=internal_port_num rport=rest_port_num $prog install service_name"
+	else
+		echo "Usage: $prog start|stop|restart|status|agentctl|uninstall"
+	fi
+
+	exit 42
+}
+
+verbose "pre install ..."
+
+# is script being run as root or as non root user
+whoami=`whoami`
+verbose "running as $whoami"
+
+# check usage 
+# uninstall=soft is for use by the rpm, not meant to be used by users
+case $1 in
+	start|stop|restart|status|uninstall|uninstall=soft)
+		[ $# != 1 ] || [[ "$prog" =~ "arep.sh" ]] && Usage
+
+		service_name=`basename $prog`
+		;;
+	install)
+		[ $# != 2 ] && Usage
+
+		service_name=$2
+		;;
+	agentctl)
+		service_name=`basename $prog`
+		;;
+	*)
+		Usage
+		;;
+esac
+exit_status=0
+
+
+# the following line is for instance configuration, do NOT modify manually
+configured=1; areproot=/opt/qlik/gateway/movement; arepiport=3550; areprport=3552; arepdata=/opt/qlik/gateway/movement/data
+
+# script settings
+set -o pipefail
+
+# determine installation directory
+if [ "$areproot" = "" ]
+then
+	export areproot=$(cd `dirname $0`/..; pwd)
+fi
+# the file containing the list of installed instances
+if [ "`stat -c %U $areproot/bin`" != "$whoami" ] && [ "$whoami" != root ]
+then
+	echo "[31m$areproot/bin is owned by `stat -c %U $areproot/bin`, can't run as $whoami, exiting[m"
+	exit 43
+fi
+agentctl=$areproot/bin/agentctl
+repagent_pid=$areproot/data/$service_name.pid
+
+# set ports and data directory supplied as command line args
+if [ "$arepiport" = "" ]
+then
+	echo "[31mThe internal port was not specified, exiting[m"
+	Usage
+else
+	arepiport="port=$arepiport"
+fi
+if [ "$areprport" = "" ]
+then
+	echo "[31mThe REST port was not specified, exiting[m"
+	Usage
+else
+	areprport="rest_port=$areprport"
+fi
+if [ "$arepdata" = "" ]
+then
+	data=$areproot/data
+	arepdata="-d $areproot/data"
+else
+	arepdata="-d $arepdata"
+fi
+
+# check the ports
+# internal and REST ports can't be the same
+if [ "`echo $areprport | awk -F= '{print $2}'`" = "`echo $arepiport | awk -F= '{print $2}'`" ]
+then
+	echo "[31mThe REST port and internal port shouldn't be the same, exiting[m"
+	Usage
+fi
+
+# validate ports
+verbose "validating port(s) ..."
+for port in $iport $rport
+do
+	validate_port $port 
+	if [ $? != 0 ]
+	then
+		echo "[31m, exiting[m" 
+		exit 6
+	fi
+done
+
+list_file=$areproot/services_list.txt
+install_dir=$areproot/bin
+verbose "installation directory is $install_dir"
+
+# source arep_login.sh for LD_LIBRARY_PATH 
+# and to source site and instance specific files
+if [ -e $areproot/bin/arep_login.sh ]
+then
+	verbose "sourcing $areproot/bin/arep_login.sh"
+	source $areproot/bin/arep_login.sh
+fi
+
+# the file containing the list of installed instances
+touch $list_file
+arepuser="`stat -c %U $agentctl`"
+arepgroup="`stat -c %G $agentctl`"
+#verbose "changing ownership of $list_file to $arepuser:$arepgroup"
+chown $arepuser:$arepgroup $list_file
+
+# function parameter is start|stop
+function start_stop()
+{
+	if [ -z "$arepuser" ]
+	then
+		echo "[31mCan't determine the owner of $agentctl ... exiting[m"
+		exit 1
+	fi
+	verbose "$agentctl belongs to $arepuser"
+	if [ "$whoami" != "$arepuser" ]
+	then
+		verbose "running su - $arepuser -c arepdata=$arepdata $agentctl $arepdata service $1"
+		if [ "${debug}" ]
+		then
+			su - $arepuser -c "arepdata=\"$arepdata\" $agentctl $arepdata service $1"
+		else
+			su - $arepuser -c "arepdata=\"$arepdata\" $agentctl $arepdata service $1" >> /dev/null 2>&1
+		fi
+	else
+		verbose "running arepdata=$arepdata $agentctl $arepdata service $1"
+		if [ "${debug}" ]
+		then
+			arepdata="$arepdata" $agentctl $arepdata service $1
+		else
+			arepdata="$arepdata" $agentctl $arepdata service $1 >> /dev/null 2>&1
+		fi
+	fi
+	stop_start_stat=$?
+	if [ "$stop_start_stat" != 0 ]
+	then
+		echo "[31mFailed to $1 service[m"
+	fi
+
+	return $stop_start_stat
+}
+
+function agentctl_config()
+{
+        if [ -z "$arepuser" ]
+        then
+                echo "^[[31mCan't determine the owner of $agentctl ... exiting^[[m"
+                exit 1
+        fi
+        verbose "$agentctl belongs to $arepuser"
+        if [ "$whoami" != "$arepuser" ]
+        then
+				for argument in "$@"; do
+				arguments="$arguments \"$argument\""
+				done
+                verbose "running su - $arepuser -c arepdata=$arepdata $agentctl $arepdata $arguments"
+                su - $arepuser -c "arepdata=\"$arepdata\" $agentctl $arepdata $arguments"
+        else
+                verbose "running arepdata=$arepdata $agentctl $arepdata $@"
+                arepdata="$arepdata" $agentctl $arepdata $@
+        fi
+        agentctl_stat=$?
+        return $agentctl_stat
+}
+
+case $1 in
+	start | stop) 	start_stop $1 || exit_status=$?
+					if [ -e /etc/systemd/system/${service_name}.service ]
+					then
+					echo `ps -ef | grep "$agentctl" | grep -v "grep" | awk '{print $2}' | head -1` > $repagent_pid
+					fi
+					;;
+	restart)		start_stop stop	
+					if [ $? = 0 ]
+					then
+						start_stop start || exit_status=$?
+					else
+						exit_status=$?
+					fi
+					;;
+	status)			nproc=`ps -ef                                                         | \
+							grep "agentctl[ ]*${arepdata}[ ]*service host" | \
+							grep -v grep                                                  | \
+							wc -l` 
+					case $nproc in
+						0) 	status_msg="not running"	;;
+						1) 	status_msg="running"		;;
+						*)	status_msg="ps is reporting $nproc lines, something is wrong with"
+							;;
+					esac
+					[ "$arepdata" = "" ] && arepdata=""
+					echo "$status_msg: $agentctl ${arepdata} service host"
+					;;
+	agentctl)       agentctl_config "${@:2}" || exit_status=$?
+					;;
+	install) 		# confirm not using instance name / port numbers / data directory already in use
+					# unless being run by rpm (reuse=yes) - not for use by users
+					if [ "$reuse" != yes ]
+					then
+						verbose "checking for instance already using $service_name $iport $rport $data"
+						for p in $service_name $iport $rport $data
+						do
+							case $p in 
+								$service_name)	param="instance name"
+												debug "grep \"^$service_name \" $list_file"
+												reuse=$?
+												;;
+								$iport)			param="internal port number"
+												debug "grep \" $iport \" $list_file"
+												reuse=$?
+												if [ "$reuse" != 0 ]
+												then
+													debug "netstat -a --numeric-ports | egrep -o \" $iport \" | sort -u"
+													reuse=$?
+												fi
+												;;
+								$rport)			param="rest port number"
+												debug "grep \" $rport \" $list_file"
+												reuse=$?
+												if [ "$reuse" != 0 ]
+												then
+													debug "netstat -a --numeric-ports | egrep -o \" $rport \" | sort -u"
+													reuse=$?
+												fi
+												;;
+								$data)			param="data directory"
+												debug "grep \" $data \" $list_file" 
+												reuse=$?
+												;;
+							esac
+							if [ "$reuse" = 0 ]
+							then
+								echo "[31m$param $p is already in use ... aborting installation[m"
+								exit 2
+							fi
+						done
+						verbose "ok to use $service_name $iport $rport $data"
+					else 	# reuse=yes when run by rpm
+						# first install irrelevant to check list file
+						if [ -s "$list_file" ]
+						then
+							# just in case user ran with reuse=yes
+							install_user=`grep "^$service_name " $list_file | awk '{print $NF}'`
+							if [ "$whoami" != "$install_user" ]
+							then
+								echo "[31mServer $service_name was previously installed by $install_user, exiting[m"
+								exit 3
+							fi
+						fi
+					fi
+					
+					# create and install configured copy of self
+					sed "s:^configured=.*$:configured=1; areproot=$areproot; arepiport=$iport; areprport=$rport; arepdata=$data:" $prog > $install_dir/$service_name
+					sed -i "s/^\(# Provides: \)INSTANCE_NAME/\1$service_name/" $install_dir/$service_name
+					chmod +x $install_dir/$service_name
+					if [ ${debug} ] #modify binary's label to support run on startup when SELinux is enforced 
+					then
+						chcon -t bin_t $install_dir/$service_name
+					else
+						chcon -t bin_t $install_dir/$service_name >> /dev/null 2>&1
+					fi
+					verbose "created $install_dir/$service_name"
+
+					# if run by root, register as service
+					if [ "$whoami" = root ] && [ "$systemd_disabled" == 0 ]
+					then
+						chown -R $arepuser:$arepgroup $areproot/bin/$service_name
+
+						cat << EOF >> /etc/systemd/system/$service_name.service
+[Unit]
+Description=Qlik Data Gateway - Data Movement
+StartLimitIntervalSec=900
+StartLimitBurst=5
+
+[Service]
+User=$arepuser
+Group=$arepgroup
+Type=forking
+ExecStart=/bin/bash -cl "$install_dir/$service_name start"
+ExecStop=/bin/bash -cl "$install_dir/$service_name stop"
+PIDFile=$repagent_pid
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=50
+
+[Install]
+WantedBy=multi-user.target
+EOF
+						verbose "created /etc/systemd/system/$service_name.service"
+						chmod 664 /etc/systemd/system/$service_name.service
+						debug "systemctl daemon-reload"
+						if [ $? != 0 ]
+						then
+							echo "[31msystemctl daemon-reload failed[m"
+							exit 100
+						fi
+						verbose "systemctl daemon-reload succeeded for service $service_name"
+						debug "systemctl enable $service_name"
+						if [ $? != 0 ]
+						then
+							echo "[31msystemctl enable $service_name failed[m"
+							exit 101
+						fi
+						verbose "systemctl enable $service_name succeeded"
+					else
+						verbose "$service_name is a non service instance"
+					fi
+	
+					# create empty instance specific file for settings
+					if [ ! -e $data/${service_name}_arep_login.sh ]
+					then
+						mkdir -p $data
+						echo "# enter instance specific settings here" > $data/${service_name}_arep_login.sh
+						chown -R $arepuser:$arepgroup $data
+						verbose "created empty instance specific settings file $data/${service_name}_arep_login.sh"	
+					fi
+
+					# "register" instance 
+					(echo "$service_name $iport $rport $data $whoami"; cat $list_file) | sort -u > /tmp/list_file.$$
+					# cat + rm instead of mv to retain ownership of $list_file
+					cat /tmp/list_file.$$ > $list_file
+					rm -f /tmp/list_file.$$
+
+					# set server password if password was suppplied
+					if [ ! -z "$pass" ]
+					then
+						verbose "setting server password to $pass ..."
+						if [ "$whoami" != "$arepuser" ]
+						then
+							if [ "${debug}" ]
+							then
+								su - $arepuser -c "arepdata=\"$arepdata\" $agentctl $arepdata agent set_config -p $pass"
+							else
+								su - $arepuser -c "arepdata=\"$arepdata\" $agentctl $arepdata agent set_config -p $pass" >> /dev/null 2>&1
+							fi
+						else
+							if [ "${debug}" ]
+							then
+								arepdata="$arepdata" $agentctl $arepdata agent set_config -p $pass
+							else
+								arepdata="$arepdata" $agentctl $arepdata agent set_config -p $pass >> /dev/null 2>&1
+							fi
+						fi
+						exit_status=$?
+						if [ "$exit_status" != 0 ]
+						then
+							echo "[31mFailed to set server password[m"
+						else
+							verbose "set server password to $pass"
+						fi
+						chown -R $arepuser:$arepgroup $data
+					fi
+					
+					if [ ! -z "$tenant_url" ]
+					then
+						verbose "setting tenant_url to $tenant_url ..."
+						if [ $whoami != $arepuser ]
+						then
+							if [ ${debug} ]
+							then
+								su - $arepuser -c "arepdata=\"$arepdata\" $agentctl $arepdata qcs set_config --tenant_url $tenant_url"
+							else
+								su - $arepuser -c "arepdata=\"$arepdata\" $agentctl $arepdata qcs set_config --tenant_url $tenant_url" >> /dev/null 2>&1
+							fi
+						else
+							if [ ${debug} ]
+							then
+								arepdata="$arepdata" $agentctl $arepdata qcs set_config --tenant_url $tenant_url
+							else
+								arepdata="$arepdata" $agentctl $arepdata qcs set_config --tenant_url $tenant_url >> /dev/null 2>&1
+							fi
+						fi
+						exit_status=$?
+						if [ $exit_status != 0 ]
+						then
+							echo "[31mFailed to set tenant_url[m"
+						else
+							verbose "set tenant_url to $tenant_url"
+						fi
+						chown -R $arepuser:$arepgroup $data
+					fi
+					verbose "creating init data files for repagent"
+					arepdata="$arepdata" $agentctl $arepdata qcs show_config >> /dev/null 2>&1
+					chown -R $arepuser:$arepgroup $data
+
+					verbose "installed $install_dir/$service_name"
+					verbose "root directory = $areproot"
+					verbose "internal port  = $iport"
+					verbose "rest port      = $rport"
+					verbose "data directory = $data"
+					verbose "installed by   = $whoami"
+					;;
+	uninstall*) 	install_user=`grep "^$service_name " $list_file | awk '{print $NF}'`
+					if [ "$install_user" = root ] && [ "$whoami" != root ]
+					then
+						echo "[31mService $service_name was installed by root and can't be uninstalled by $whoami[m"
+						exit 4
+					fi
+
+					if [ "$install_user" != root ]
+					then
+						case $whoami in
+							$install_user|root)	
+								install_dir=$areproot/bin
+								;;
+							*) 
+								echo "[31m$service_name was installed by $install_user, and can't be uninstalled by $whoami[m"
+								exit 5
+								;;
+						esac
+					fi
+
+					verbose "stopping $service_name ..."
+					start_stop stop	|| exit_status=$?
+
+					verbose "uninstalling $service_name"
+					if [ "$install_user" = root ] && [ "$whoami" = root ] && [ -e /etc/systemd/system/${service_name}.service ]
+					then
+						debug "systemctl disable $service_name"
+						rm -f 	/etc/systemd/system/$service_name.service	\
+								/etc/systemd/system/multi-user.target.wants/$service_name.service
+						debug "systemctl daemon-reload"
+						if [ $? != 0 ]
+						then
+							# report but don't exit/stop in the middle of uninstall
+							echo "[31msystemctl daemon-reload failed[m"
+						fi
+						verbose "systemctl daemon-reload succeeded for service $service_name"
+						debug "systemctl reset-failed $service_name"
+						if [ $? != 0 ]
+						then
+							# verbose report but don't exit/stop in the middle of uninstall
+							verbose "[31msystemctl reset-failed failed[m"
+						fi
+						verbose "systemctl reset-failed succeeded for service $service_name"
+					fi
+					rm -f $areproot/bin/$service_name	
+
+					# uninstall=soft leaves instance in list for upgrade
+					if [[ "$1" =~ uninstall$ ]] 
+					then
+						sed -i "/^$service_name / d" $list_file
+						verbose "deleted $service_name from $list_file"
+					else
+						verbose "leaving $service_name registered in $list_file"
+					fi
+
+					verbose "uninstalled $install_dir/$service_name"
+					;;
+	*)				Usage
+					;;
+esac
+
+exit $exit_status
