@@ -1,7 +1,8 @@
 #!/bin/bash
 # ==========================================================
 # Clona repagent, copia backup completo a /opt, espejo en /mnt (bin),
-# y crea servicio systemd que ejecuta desde /opt.
+# crea usuario de sistema 'qlik' (si no existe) y deja el servicio
+# ejecutando desde /opt como 'qlik'.
 # ==========================================================
 
 set -euo pipefail
@@ -22,12 +23,15 @@ MNT_BIN="$MNT_BASE/bin"                                   # espejo opcional
 EXEC_FILE="repagent"
 AGENTCTL="agentctl"
 
-SERVICE_USER="root"                                  # cámbialo si deseas otro usuario
+SERVICE_USER="qlik"                                       # ahora usamos el usuario 'qlik'
 SERVICE_FILE="/etc/systemd/system/repagent.service"
 LOG_FILE="/var/log/repagent.log"
 
 echo "🚀 Instalando dependencias..."
 sudo dnf install -y git curl dos2unix rsync
+
+echo "👤 Creando usuario de sistema '$SERVICE_USER' (si no existe)..."
+id "$SERVICE_USER" >/dev/null 2>&1 || sudo useradd -r -M -s /sbin/nologin "$SERVICE_USER"
 
 echo "⚙️ Configurando usuario global de git..."
 git config --global user.name "$GIT_USER"
@@ -52,7 +56,6 @@ TMP_REPO="$(mktemp -d)"
 echo "🌐 Clonando repo en $TMP_REPO ..."
 git clone "$GITHUB_REPO" "$TMP_REPO"
 
-# Mover (o copiar) repagent y agentctl del repo a /opt/bin
 echo "📦 Colocando $EXEC_FILE y $AGENTCTL (si existe) en $RUN_BIN ..."
 if [ -f "$TMP_REPO/$EXEC_FILE" ]; then
   sudo rsync -a "$TMP_REPO/$EXEC_FILE" "$RUN_BIN/$EXEC_FILE"
@@ -76,17 +79,20 @@ echo "📤 Espejando binarios en $MNT_BIN ..."
 sudo rsync -a "$RUN_BIN"/ "$MNT_BIN"/
 sudo chown -R root:root "$MNT_BASE" || true
 
-# --- 4) Log y ownerships ---
+# --- 4) Log y ownerships (CLAVE para que repagent arranque) ---
 echo "🧾 Asegurando archivo de log..."
 sudo touch "$LOG_FILE"
 sudo chmod 664 "$LOG_FILE"
-# No es obligatorio que el log sea del SERVICE_USER; journalctl también conserva logs.
+sudo chown "$SERVICE_USER":"$SERVICE_USER" "$LOG_FILE" 2>/dev/null || true
 
-# Si quieres que todo /opt/qlik pertenezca al usuario del servicio, descomenta:
-# sudo chown -R "$SERVICE_USER":"$SERVICE_USER" "$RUN_BASE" 2>/dev/null || true
+echo "🛡️ Ajustando ownership requerido por repagent..."
+# repagent valida que RUN_BIN y agentctl pertenezcan al mismo usuario que ejecuta el servicio
+sudo chown -R "$SERVICE_USER":"$SERVICE_USER" "$RUN_BIN" "$RUN_DATA"
+sudo touch "$RUN_BASE/services_list.txt" 2>/dev/null || true
+sudo chown "$SERVICE_USER":"$SERVICE_USER" "$RUN_BASE/services_list.txt" 2>/dev/null || true
 
 # --- 5) Unit file systemd (ejecuta desde /opt, PID en /opt/data) ---
-echo "🛠️ Creando servicio systemd (ejecución desde /opt)..."
+echo "🛠️ Creando servicio systemd (ejecución desde /opt, User=$SERVICE_USER)..."
 sudo tee "$SERVICE_FILE" >/dev/null <<EOF
 [Unit]
 Description=Servicio repagent (Qlik Data Movement Gateway)
@@ -120,4 +126,4 @@ sudo systemctl status repagent --no-pager || true
 echo "📜 Últimas líneas del log:"
 sudo tail -n 100 "$LOG_FILE" 2>/dev/null || true
 
-echo "✅ Listo. Ejecutando desde $RUN_BIN, datos en $RUN_DATA. Espejo de binarios en $MNT_BIN."
+echo "✅ Listo. Ejecutando como '$SERVICE_USER' desde $RUN_BIN, datos en $RUN_DATA. Espejo de binarios en $MNT_BIN."
