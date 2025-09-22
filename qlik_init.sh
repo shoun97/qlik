@@ -8,7 +8,7 @@
 GIT_USER="shoun97"
 GIT_EMAIL="shoun97@gmail.com"
 GITHUB_REPO="https://github.com/shoun97/qlik.git"
-SRC_DIR="/opt/qlik/qlik.bak.2025-09-05/gateway/movement/bin"
+SRC_DIR="/opt/qlik.bak.2025-09-05/gateway/movement/bin"
 TARGET_DIR="/mnt/qlik/gateway/movement/bin"
 EXEC_FILE="repagent"
 SERVICE_FILE="/etc/systemd/system/repagent.service"
