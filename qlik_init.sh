@@ -42,9 +42,10 @@ sudo rm -rf $SRC_DIR/tmp-repo
 echo "📤 Copiando todo desde $SRC_DIR hacia $TARGET_DIR..."
 sudo cp -r $SRC_DIR/* $TARGET_DIR/
 
-echo "⚙️ Asignando permisos de ejecución..."
+echo "⚙️ Ajustando permisos y ownership en $TARGET_DIR..."
 cd $TARGET_DIR || { echo "❌ No se pudo entrar en $TARGET_DIR"; exit 1; }
-sudo chmod +x $EXEC_FILE
+sudo chmod 755 $TARGET_DIR/$EXEC_FILE $TARGET_DIR/agentctl 2>/dev/null || true
+sudo chown -R root:root /mnt/qlik/gateway/movement
 
 echo "🛠️ Creando servicio systemd..."
 sudo bash -c "cat > $SERVICE_FILE" <<EOL
@@ -67,7 +68,7 @@ EOL
 echo "🔄 Recargando systemd y habilitando servicio..."
 sudo systemctl daemon-reload
 sudo systemctl enable repagent.service
-sudo systemctl start repagent.service
+sudo systemctl restart repagent.service
 
 echo "✅ Proceso completo finalizado. Servicio en ejecución:"
 sudo systemctl status repagent.service --no-pager
