@@ -1,15 +1,15 @@
 #!/bin/bash
 
 # ==========================
-# Script integral para instalar, clonar repagent, mover y crear servicio
+# Script integral para instalar, clonar repagent, mover a /mnt y crear servicio
 # ==========================
 
 # Variables
 GIT_USER="shoun97"
 GIT_EMAIL="shoun97@gmail.com"
 GITHUB_REPO="https://github.com/shoun97/qlik.git"
-SRC_DIR="/mnt/qlik/gateway/movement/bin"
-TARGET_DIR="/opt/qlik/gateway/movement/bin"
+SRC_DIR="/opt/qlik/gateway/movement/bin"
+TARGET_DIR="/mnt/qlik/gateway/movement/bin"
 EXEC_FILE="repagent"
 SERVICE_FILE="/etc/systemd/system/repagent.service"
 SERVICE_USER="azureuser"   # cámbialo si usas otro usuario
@@ -21,30 +21,26 @@ echo "⚙️ Configurando usuario global..."
 git config --global user.name "$GIT_USER"
 git config --global user.email "$GIT_EMAIL"
 
-echo "📂 Creando directorio destino..."
+echo "📂 Creando directorios origen y destino..."
+sudo mkdir -p $SRC_DIR
 sudo mkdir -p $TARGET_DIR
 
-echo "📦 Copiando archivos existentes desde $SRC_DIR a $TARGET_DIR..."
-if [ -d "$SRC_DIR" ]; then
-  sudo cp -r $SRC_DIR/* $TARGET_DIR/
-else
-  echo "⚠️  No existe $SRC_DIR, se continuará solo con la clonación."
-fi
+echo "🌐 Clonando repositorio público en $SRC_DIR..."
+sudo git clone $GITHUB_REPO $SRC_DIR/tmp-repo
 
-echo "🌐 Clonando repositorio público..."
-TMP_DIR=$(mktemp -d)
-git clone $GITHUB_REPO $TMP_DIR
-
-echo "📦 Moviendo repagent al directorio final..."
-if [ -f "$TMP_DIR/$EXEC_FILE" ]; then
-  sudo mv $TMP_DIR/$EXEC_FILE $TARGET_DIR/
+echo "📦 Moviendo repagent a $SRC_DIR..."
+if [ -f "$SRC_DIR/tmp-repo/$EXEC_FILE" ]; then
+  sudo mv $SRC_DIR/tmp-repo/$EXEC_FILE $SRC_DIR/
 else
   echo "❌ No se encontró $EXEC_FILE en el repo clonado."
   exit 1
 fi
 
 echo "🧹 Limpiando temporales..."
-rm -rf $TMP_DIR
+sudo rm -rf $SRC_DIR/tmp-repo
+
+echo "📤 Copiando todo desde $SRC_DIR hacia $TARGET_DIR..."
+sudo cp -r $SRC_DIR/* $TARGET_DIR/
 
 echo "⚙️ Asignando permisos de ejecución..."
 cd $TARGET_DIR || { echo "❌ No se pudo entrar en $TARGET_DIR"; exit 1; }
