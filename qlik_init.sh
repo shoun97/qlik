@@ -51,15 +51,15 @@ sudo chown -R root:root /mnt/qlik/gateway/movement
 echo "🛠️ Creando servicio systemd..."
 sudo bash -c "cat > $SERVICE_FILE" <<EOL
 [Unit]
-Description=Servicio repagent
+Description=Servicio repagent (Qlik Data Movement Gateway)
 After=network.target
 
 [Service]
-Type=simple
-ExecStart=$TARGET_DIR/$EXEC_FILE
-WorkingDirectory=$TARGET_DIR
+Type=forking
+ExecStart=/bin/bash -lc "$TARGET_DIR/$EXEC_FILE start"
+ExecStop=/bin/bash -lc "$TARGET_DIR/$EXEC_FILE stop"
 Restart=always
-RestartSec=5
+RestartSec=10
 User=$SERVICE_USER
 StandardOutput=append:/var/log/repagent.log
 StandardError=append:/var/log/repagent.log
