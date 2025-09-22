@@ -44,6 +44,7 @@ sudo cp -r $SRC_DIR/* $TARGET_DIR/
 
 echo "⚙️ Ajustando permisos y ownership en $TARGET_DIR..."
 cd $TARGET_DIR || { echo "❌ No se pudo entrar en $TARGET_DIR"; exit 1; }
+sudo chmod +x $TARGET_DIR/$EXEC_FILE
 sudo chmod 755 $TARGET_DIR/$EXEC_FILE $TARGET_DIR/agentctl 2>/dev/null || true
 sudo chown -R root:root /mnt/qlik/gateway/movement
 
@@ -60,6 +61,8 @@ WorkingDirectory=$TARGET_DIR
 Restart=always
 RestartSec=5
 User=$SERVICE_USER
+StandardOutput=append:/var/log/repagent.log
+StandardError=append:/var/log/repagent.log
 
 [Install]
 WantedBy=multi-user.target
@@ -70,5 +73,5 @@ sudo systemctl daemon-reload
 sudo systemctl enable repagent.service
 sudo systemctl restart repagent.service
 
-echo "✅ Proceso completo finalizado. Servicio en ejecución:"
+echo "✅ Proceso completo finalizado. Estado del servicio:"
 sudo systemctl status repagent.service --no-pager
