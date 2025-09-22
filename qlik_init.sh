@@ -104,7 +104,4 @@ sudo systemctl restart repagent || true
 echo "📌 Estado del servicio:"
 sudo systemctl status repagent --no-pager || true
 
-echo "📜 Últimas líneas del log:"
-sudo tail -n 100 "$LOG_FILE" 2>/dev/null || true
-
 echo "✅ Listo: ejecutando como root desde $RUN_BIN, datos en $RUN_DATA."
